@@ -168,6 +168,11 @@ public class JellyfinDbContext(DbContextOptions<JellyfinDbContext> options, ILog
     /// </summary>
     public DbSet<KeyframeData> KeyframeData => Set<KeyframeData>();
 
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/> containing the clips.
+    /// </summary>
+    public DbSet<Clip> Clips => Set<Clip>();
+
     /*public DbSet<Artwork> Artwork => Set<Artwork>();
 
     public DbSet<Book> Books => Set<Book>();
