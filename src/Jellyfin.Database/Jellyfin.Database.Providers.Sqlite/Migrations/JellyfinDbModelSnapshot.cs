@@ -558,6 +558,56 @@ namespace Jellyfin.Server.Implementations.Migrations
                     b.HasAnnotation("Sqlite:UseSqlReturningClause", false);
                 });
 
+            modelBuilder.Entity("Jellyfin.Database.Implementations.Entities.Clip", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("EndTicks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FilePath")
+                        .HasMaxLength(1024)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("ItemId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ItemName")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<uint>("RowVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("StartTicks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("SubtitleStreamIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("Clips");
+
+                    b.HasAnnotation("Sqlite:UseSqlReturningClause", false);
+                });
+
             modelBuilder.Entity("Jellyfin.Database.Implementations.Entities.CustomItemDisplayPreferences", b =>
                 {
                     b.Property<int>("Id")
