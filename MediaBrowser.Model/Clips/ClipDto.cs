@@ -44,6 +44,11 @@ public class ClipDto
     public int? SubtitleStreamIndex { get; set; }
 
     /// <summary>
+    /// Gets or sets the audio stream index used, or null for default.
+    /// </summary>
+    public int? AudioStreamIndex { get; set; }
+
+    /// <summary>
     /// Gets or sets the processing status.
     /// </summary>
     public ClipStatus Status { get; set; }
