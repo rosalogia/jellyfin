@@ -52,7 +52,7 @@ public class ClipManager : IClipManager
     }
 
     /// <inheritdoc />
-    public async Task<ClipDto> CreateClipAsync(Guid userId, Guid itemId, long startTicks, long endTicks, int? subtitleStreamIndex = null)
+    public async Task<ClipDto> CreateClipAsync(Guid userId, Guid itemId, long startTicks, long endTicks, int? subtitleStreamIndex = null, int? audioStreamIndex = null)
     {
         var item = _libraryManager.GetItemById(itemId);
         if (item is null)
@@ -63,7 +63,8 @@ public class ClipManager : IClipManager
         var clip = new Clip(userId, itemId, startTicks, endTicks)
         {
             ItemName = item.Name,
-            SubtitleStreamIndex = subtitleStreamIndex
+            SubtitleStreamIndex = subtitleStreamIndex,
+            AudioStreamIndex = audioStreamIndex
         };
 
         var db = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
@@ -77,7 +78,7 @@ public class ClipManager : IClipManager
         var sourcePath = item.Path;
 
         // Fire-and-forget background processing
-        _ = Task.Run(() => ProcessClipAsync(clipId, sourcePath, startTicks, endTicks, subtitleStreamIndex));
+        _ = Task.Run(() => ProcessClipAsync(clipId, sourcePath, startTicks, endTicks, subtitleStreamIndex, audioStreamIndex));
 
         return ConvertToDto(clip);
     }
@@ -192,7 +193,7 @@ public class ClipManager : IClipManager
         }
     }
 
-    private async Task ProcessClipAsync(Guid clipId, string sourcePath, long startTicks, long endTicks, int? subtitleStreamIndex)
+    private async Task ProcessClipAsync(Guid clipId, string sourcePath, long startTicks, long endTicks, int? subtitleStreamIndex, int? audioStreamIndex)
     {
         try
         {
@@ -207,13 +208,18 @@ public class ClipManager : IClipManager
 
             var ffmpegPath = _mediaEncoder.EncoderPath;
 
+            // Build audio stream mapping if user selected a specific audio track.
+            var audioMap = audioStreamIndex.HasValue
+                ? $"-map 0:v:0 -map 0:a:{audioStreamIndex.Value}"
+                : string.Empty;
+
             // First try: burn in subtitles. Use the user-selected stream index if provided.
             // -ss is placed after -i so the subtitle filter sees original timestamps.
             var escapedPath = EscapeSubtitleFilterPath(sourcePath);
             var subtitleFilter = subtitleStreamIndex.HasValue
                 ? $"subtitles='{escapedPath}':si={subtitleStreamIndex.Value}"
                 : $"subtitles='{escapedPath}'";
-            var argsWithSubs = $"-i \"{sourcePath}\" -ss {startSeconds:F3} -t {durationSeconds:F3} -vf \"{subtitleFilter}\" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -sn \"{outputPath}\"";
+            var argsWithSubs = $"-i \"{sourcePath}\" -ss {startSeconds:F3} -t {durationSeconds:F3} {audioMap} -vf \"{subtitleFilter}\" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -sn \"{outputPath}\"";
 
             _logger.LogInformation("Processing clip {ClipId} with subtitles: {FfmpegPath} {Args}", clipId, ffmpegPath, argsWithSubs);
 
@@ -230,7 +236,7 @@ public class ClipManager : IClipManager
                     File.Delete(outputPath);
                 }
 
-                var argsNoSubs = $"-ss {startSeconds:F3} -i \"{sourcePath}\" -t {durationSeconds:F3} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -sn \"{outputPath}\"";
+                var argsNoSubs = $"-ss {startSeconds:F3} -i \"{sourcePath}\" -t {durationSeconds:F3} {audioMap} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -sn \"{outputPath}\"";
 
                 _logger.LogInformation("Processing clip {ClipId} without subtitles: {FfmpegPath} {Args}", clipId, ffmpegPath, argsNoSubs);
 
@@ -326,6 +332,7 @@ public class ClipManager : IClipManager
             EndTicks = clip.EndTicks,
             CreatedAt = clip.CreatedAt,
             SubtitleStreamIndex = clip.SubtitleStreamIndex,
+            AudioStreamIndex = clip.AudioStreamIndex,
             Status = clip.Status
         };
     }

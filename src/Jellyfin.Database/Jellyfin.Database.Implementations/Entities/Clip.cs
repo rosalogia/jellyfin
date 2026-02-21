@@ -77,6 +77,11 @@ public class Clip : IHasConcurrencyToken
     public int? SubtitleStreamIndex { get; set; }
 
     /// <summary>
+    /// Gets or sets the audio stream index to use, or null for default.
+    /// </summary>
+    public int? AudioStreamIndex { get; set; }
+
+    /// <summary>
     /// Gets or sets the cached item name for display.
     /// </summary>
     [MaxLength(512)]

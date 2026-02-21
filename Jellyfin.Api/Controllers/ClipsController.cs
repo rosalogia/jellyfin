@@ -38,6 +38,7 @@ public class ClipsController : BaseJellyfinApiController
     /// <param name="startTicks">The start time in ticks.</param>
     /// <param name="endTicks">The end time in ticks.</param>
     /// <param name="subtitleStreamIndex">The subtitle stream index to burn in.</param>
+    /// <param name="audioStreamIndex">The audio stream index to use.</param>
     /// <response code="201">Clip created.</response>
     /// <returns>The created clip.</returns>
     [HttpPost]
@@ -46,10 +47,11 @@ public class ClipsController : BaseJellyfinApiController
         [FromQuery, Required] Guid itemId,
         [FromQuery, Required] long startTicks,
         [FromQuery, Required] long endTicks,
-        [FromQuery] int? subtitleStreamIndex = null)
+        [FromQuery] int? subtitleStreamIndex = null,
+        [FromQuery] int? audioStreamIndex = null)
     {
         var userId = User.GetUserId();
-        var clip = await _clipManager.CreateClipAsync(userId, itemId, startTicks, endTicks, subtitleStreamIndex)
+        var clip = await _clipManager.CreateClipAsync(userId, itemId, startTicks, endTicks, subtitleStreamIndex, audioStreamIndex)
             .ConfigureAwait(false);
 
         return Created($"/Clips/{clip.Id}", clip);

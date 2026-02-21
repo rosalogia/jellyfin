@@ -19,8 +19,9 @@ public interface IClipManager
     /// <param name="startTicks">The start time in ticks.</param>
     /// <param name="endTicks">The end time in ticks.</param>
     /// <param name="subtitleStreamIndex">The subtitle stream index to burn in, or null for default.</param>
+    /// <param name="audioStreamIndex">The audio stream index to use, or null for default.</param>
     /// <returns>The created clip DTO.</returns>
-    Task<ClipDto> CreateClipAsync(Guid userId, Guid itemId, long startTicks, long endTicks, int? subtitleStreamIndex = null);
+    Task<ClipDto> CreateClipAsync(Guid userId, Guid itemId, long startTicks, long endTicks, int? subtitleStreamIndex = null, int? audioStreamIndex = null);
 
     /// <summary>
     /// Gets all clips for a user.
