@@ -208,37 +208,64 @@ public class ClipManager : IClipManager
 
             var ffmpegPath = _mediaEncoder.EncoderPath;
 
-            // Build audio stream mapping if user selected a specific audio track.
-            var audioMap = audioStreamIndex.HasValue
-                ? $"-map 0:v:0 -map 0:a:{audioStreamIndex.Value}"
-                : string.Empty;
-
-            // Convert global stream index to subtitle-relative index for ffmpeg's subtitles filter.
-            // The 'si' parameter counts only subtitle streams, not all streams.
+            // Convert global stream indices to type-relative indices for ffmpeg.
+            // ffmpeg's -map 0:a:N and subtitles si=N count only streams of that type,
+            // but Jellyfin passes global stream indices that count all streams.
+            int? audioRelativeIndex = null;
             int? subtitleRelativeIndex = null;
-            if (subtitleStreamIndex.HasValue)
+            if (audioStreamIndex.HasValue || subtitleStreamIndex.HasValue)
             {
                 var item = _libraryManager.GetItemById(itemId);
                 if (item is MediaBrowser.Controller.Entities.Video video)
                 {
-                    var subtitleStreams = video.GetMediaStreams()
-                        .Where(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Subtitle)
-                        .OrderBy(s => s.Index)
-                        .ToList();
+                    var streams = video.GetMediaStreams();
 
-                    subtitleRelativeIndex = subtitleStreams.FindIndex(s => s.Index == subtitleStreamIndex.Value);
-                    if (subtitleRelativeIndex < 0)
+                    if (audioStreamIndex.HasValue)
                     {
-                        subtitleRelativeIndex = null; // Stream not found, will use default
+                        var audioStreams = streams
+                            .Where(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Audio)
+                            .OrderBy(s => s.Index)
+                            .ToList();
+
+                        audioRelativeIndex = audioStreams.FindIndex(s => s.Index == audioStreamIndex.Value);
+                        if (audioRelativeIndex < 0)
+                        {
+                            audioRelativeIndex = null;
+                        }
+
+                        _logger.LogDebug(
+                            "Converted global audio index {GlobalIndex} to relative index {RelativeIndex} for clip {ClipId}",
+                            audioStreamIndex.Value,
+                            audioRelativeIndex,
+                            clipId);
                     }
 
-                    _logger.LogDebug(
-                        "Converted global subtitle index {GlobalIndex} to relative index {RelativeIndex} for clip {ClipId}",
-                        subtitleStreamIndex.Value,
-                        subtitleRelativeIndex,
-                        clipId);
+                    if (subtitleStreamIndex.HasValue)
+                    {
+                        var subtitleStreams = streams
+                            .Where(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Subtitle)
+                            .OrderBy(s => s.Index)
+                            .ToList();
+
+                        subtitleRelativeIndex = subtitleStreams.FindIndex(s => s.Index == subtitleStreamIndex.Value);
+                        if (subtitleRelativeIndex < 0)
+                        {
+                            subtitleRelativeIndex = null;
+                        }
+
+                        _logger.LogDebug(
+                            "Converted global subtitle index {GlobalIndex} to relative index {RelativeIndex} for clip {ClipId}",
+                            subtitleStreamIndex.Value,
+                            subtitleRelativeIndex,
+                            clipId);
+                    }
                 }
             }
+
+            // Build audio stream mapping if user selected a specific audio track.
+            var audioMap = audioRelativeIndex.HasValue
+                ? $"-map 0:v:0 -map 0:a:{audioRelativeIndex.Value}"
+                : string.Empty;
 
             // First try: burn in subtitles. Use the user-selected stream index if provided.
             // -ss is placed after -i so the subtitle filter sees original timestamps.
