@@ -78,7 +78,7 @@ public class ClipManager : IClipManager
         var sourcePath = item.Path;
 
         // Fire-and-forget background processing
-        _ = Task.Run(() => ProcessClipAsync(clipId, sourcePath, startTicks, endTicks, subtitleStreamIndex, audioStreamIndex));
+        _ = Task.Run(() => ProcessClipAsync(clipId, itemId, sourcePath, startTicks, endTicks, subtitleStreamIndex, audioStreamIndex));
 
         return ConvertToDto(clip);
     }
@@ -193,7 +193,7 @@ public class ClipManager : IClipManager
         }
     }
 
-    private async Task ProcessClipAsync(Guid clipId, string sourcePath, long startTicks, long endTicks, int? subtitleStreamIndex, int? audioStreamIndex)
+    private async Task ProcessClipAsync(Guid clipId, Guid itemId, string sourcePath, long startTicks, long endTicks, int? subtitleStreamIndex, int? audioStreamIndex)
     {
         try
         {
@@ -213,11 +213,38 @@ public class ClipManager : IClipManager
                 ? $"-map 0:v:0 -map 0:a:{audioStreamIndex.Value}"
                 : string.Empty;
 
+            // Convert global stream index to subtitle-relative index for ffmpeg's subtitles filter.
+            // The 'si' parameter counts only subtitle streams, not all streams.
+            int? subtitleRelativeIndex = null;
+            if (subtitleStreamIndex.HasValue)
+            {
+                var item = _libraryManager.GetItemById(itemId);
+                if (item is MediaBrowser.Controller.Entities.Video video)
+                {
+                    var subtitleStreams = video.GetMediaStreams()
+                        .Where(s => s.Type == MediaBrowser.Model.Entities.MediaStreamType.Subtitle)
+                        .OrderBy(s => s.Index)
+                        .ToList();
+
+                    subtitleRelativeIndex = subtitleStreams.FindIndex(s => s.Index == subtitleStreamIndex.Value);
+                    if (subtitleRelativeIndex < 0)
+                    {
+                        subtitleRelativeIndex = null; // Stream not found, will use default
+                    }
+
+                    _logger.LogDebug(
+                        "Converted global subtitle index {GlobalIndex} to relative index {RelativeIndex} for clip {ClipId}",
+                        subtitleStreamIndex.Value,
+                        subtitleRelativeIndex,
+                        clipId);
+                }
+            }
+
             // First try: burn in subtitles. Use the user-selected stream index if provided.
             // -ss is placed after -i so the subtitle filter sees original timestamps.
             var escapedPath = EscapeSubtitleFilterPath(sourcePath);
-            var subtitleFilter = subtitleStreamIndex.HasValue
-                ? $"subtitles='{escapedPath}':si={subtitleStreamIndex.Value}"
+            var subtitleFilter = subtitleRelativeIndex.HasValue
+                ? $"subtitles='{escapedPath}':si={subtitleRelativeIndex.Value}"
                 : $"subtitles='{escapedPath}'";
             var argsWithSubs = $"-i \"{sourcePath}\" -ss {startSeconds:F3} -t {durationSeconds:F3} {audioMap} -vf \"{subtitleFilter}\" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -sn \"{outputPath}\"";
 
@@ -292,12 +319,12 @@ public class ClipManager : IClipManager
 
     private static string EscapeSubtitleFilterPath(string path)
     {
+        // Only escape characters that conflict with ffmpeg filter syntax.
+        // Do NOT escape brackets - libass needs the literal path to find the file.
         return path
             .Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace(":", "\\:", StringComparison.Ordinal)
-            .Replace("'", "\\'", StringComparison.Ordinal)
-            .Replace("[", "\\[", StringComparison.Ordinal)
-            .Replace("]", "\\]", StringComparison.Ordinal);
+            .Replace("'", "\\'", StringComparison.Ordinal);
     }
 
     private async Task UpdateClipStatusAsync(Guid clipId, ClipStatus status)
