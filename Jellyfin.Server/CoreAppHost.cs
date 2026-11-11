@@ -14,6 +14,7 @@ using Jellyfin.Server.Implementations.Devices;
 using Jellyfin.Server.Implementations.Events;
 using Jellyfin.Server.Implementations.Extensions;
 using Jellyfin.Server.Implementations.Security;
+using Jellyfin.Server.Implementations.StudySubtitles;
 using Jellyfin.Server.Implementations.Trickplay;
 using Jellyfin.Server.Implementations.Users;
 using MediaBrowser.Controller;
@@ -27,6 +28,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Lyrics;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Controller.Security;
+using MediaBrowser.Controller.StudySubtitles;
 using MediaBrowser.Controller.Trickplay;
 using MediaBrowser.Model.Activity;
 using MediaBrowser.Providers.Lyric;
@@ -90,6 +92,7 @@ namespace Jellyfin.Server
             serviceCollection.AddSingleton<IDeviceManager, DeviceManager>();
             serviceCollection.AddSingleton<ITrickplayManager, TrickplayManager>();
             serviceCollection.AddSingleton<IClipManager, ClipManager>();
+            serviceCollection.AddSingleton<IStudySubtitleManager, StudySubtitleManager>();
 
             // TODO search the assemblies instead of adding them manually?
             serviceCollection.AddSingleton<IWebSocketListener, SessionWebSocketListener>();
