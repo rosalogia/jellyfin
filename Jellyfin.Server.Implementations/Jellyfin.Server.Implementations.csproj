@@ -26,6 +26,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="StudySubtitles\Resources\cedict_ts.u8.gz" LogicalName="Jellyfin.Server.Implementations.StudySubtitles.cedict_ts.u8.gz" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="AsyncKeyedLock" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
   </ItemGroup>
