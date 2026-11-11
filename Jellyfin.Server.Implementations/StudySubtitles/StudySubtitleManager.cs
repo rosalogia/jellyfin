@@ -71,7 +71,7 @@ public class StudySubtitleManager : IStudySubtitleManager
 
         var mediaSources = _mediaSourceManager.GetStaticMediaSources(item, false);
         var mediaSource = mediaSources.FirstOrDefault(m => string.Equals(m.Id, mediaSourceId, StringComparison.OrdinalIgnoreCase))
-            ?? mediaSources.FirstOrDefault();
+            ?? (mediaSources.Count > 0 ? mediaSources[0] : null);
         if (mediaSource is null)
         {
             return null;
