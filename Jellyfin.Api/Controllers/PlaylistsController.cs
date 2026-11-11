@@ -29,6 +29,7 @@ namespace Jellyfin.Api.Controllers;
 /// Playlists controller.
 /// </summary>
 [Authorize]
+[Tags("Playlist")]
 public class PlaylistsController : BaseJellyfinApiController
 {
     private readonly IPlaylistManager _playlistManager;
@@ -520,7 +521,7 @@ public class PlaylistsController : BaseJellyfinApiController
         [FromQuery] int? imageTypeLimit,
         [FromQuery, ModelBinder(typeof(CommaDelimitedCollectionModelBinder))] ImageType[] enableImageTypes)
     {
-        var callingUserId = userId ?? User.GetUserId();
+        var callingUserId = RequestHelpers.GetUserId(User, userId);
         var playlist = _playlistManager.GetPlaylistForUser(playlistId, callingUserId);
         if (playlist is null)
         {

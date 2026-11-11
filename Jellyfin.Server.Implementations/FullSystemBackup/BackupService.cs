@@ -12,6 +12,7 @@ using Jellyfin.Database.Implementations;
 using Jellyfin.Server.Implementations.StorageHelpers;
 using Jellyfin.Server.Implementations.SystemBackupService;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.SystemBackupService;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -33,6 +34,7 @@ public class BackupService : IBackupService
     private readonly IServerApplicationPaths _applicationPaths;
     private readonly IJellyfinDatabaseProvider _jellyfinDatabaseProvider;
     private readonly IHostApplicationLifetime _hostApplicationLifetime;
+    private readonly ILibraryManager _libraryManager;
     private static readonly JsonSerializerOptions _serializerSettings = new JsonSerializerOptions(JsonSerializerDefaults.General)
     {
         AllowTrailingCommas = true,
@@ -50,13 +52,15 @@ public class BackupService : IBackupService
     /// <param name="applicationPaths">The application paths.</param>
     /// <param name="jellyfinDatabaseProvider">The Jellyfin database Provider in use.</param>
     /// <param name="applicationLifetime">The SystemManager.</param>
+    /// <param name="libraryManager">Instance of the <see cref="ILibraryManager"/> interface.</param>
     public BackupService(
         ILogger<BackupService> logger,
         IDbContextFactory<JellyfinDbContext> dbProvider,
         IServerApplicationHost applicationHost,
         IServerApplicationPaths applicationPaths,
         IJellyfinDatabaseProvider jellyfinDatabaseProvider,
-        IHostApplicationLifetime applicationLifetime)
+        IHostApplicationLifetime applicationLifetime,
+        ILibraryManager libraryManager)
     {
         _logger = logger;
         _dbProvider = dbProvider;
@@ -64,6 +68,7 @@ public class BackupService : IBackupService
         _applicationPaths = applicationPaths;
         _jellyfinDatabaseProvider = jellyfinDatabaseProvider;
         _hostApplicationLifetime = applicationLifetime;
+        _libraryManager = libraryManager;
     }
 
     /// <inheritdoc/>
@@ -118,14 +123,20 @@ public class BackupService : IBackupService
                 throw new NotSupportedException($"The loaded archive '{archivePath}' is made for a newer version of Jellyfin ({manifest.ServerVersion}) and cannot be loaded in this version.");
             }
 
-            void CopyDirectory(string source, string target)
+            void CopyDirectory(string source, string target, string[]? exclude = null)
             {
                 var fullSourcePath = NormalizePathSeparator(Path.GetFullPath(source) + Path.DirectorySeparatorChar);
                 var fullTargetRoot = Path.GetFullPath(target) + Path.DirectorySeparatorChar;
+                var excludePaths = exclude?.Select(e => $"{source}/{e}/").ToArray();
                 foreach (var item in zipArchive.Entries)
                 {
                     var sourcePath = NormalizePathSeparator(Path.GetFullPath(item.FullName));
                     var targetPath = Path.GetFullPath(Path.Combine(target, Path.GetRelativePath(source, item.FullName)));
+
+                    if (excludePaths is not null && excludePaths.Any(e => item.FullName.StartsWith(e, StringComparison.Ordinal)))
+                    {
+                        continue;
+                    }
 
                     if (!sourcePath.StartsWith(fullSourcePath, StringComparison.Ordinal)
                         || !targetPath.StartsWith(fullTargetRoot, StringComparison.Ordinal)
@@ -142,8 +153,10 @@ public class BackupService : IBackupService
             }
 
             CopyDirectory("Config", _applicationPaths.ConfigurationDirectoryPath);
-            CopyDirectory("Data", _applicationPaths.DataPath);
+            CopyDirectory("Data", _applicationPaths.DataPath, exclude: ["metadata", "metadata-default"]);
             CopyDirectory("Root", _applicationPaths.RootFolderPath);
+            CopyDirectory("Data/metadata", _applicationPaths.InternalMetadataPath);
+            CopyDirectory("Data/metadata-default", _applicationPaths.DefaultInternalMetadataPath);
 
             if (manifest.Options.Database)
             {
@@ -255,6 +268,14 @@ public class BackupService : IBackupService
     /// <inheritdoc/>
     public async Task<BackupManifestDto> CreateBackupAsync(BackupOptionsDto backupOptions)
     {
+        // Creating a backup runs a database optimization and reads the entire database under a transaction, both of
+        // which heavily contend with an active library scan and could capture an inconsistent database state.
+        if (_libraryManager.IsScanRunning)
+        {
+            _logger.LogWarning("Cannot create a backup while a library scan is running.");
+            throw new InvalidOperationException("Cannot create a backup while a library scan is running. Please try again once the scan has finished.");
+        }
+
         var manifest = new BackupManifest()
         {
             DateCreated = DateTime.UtcNow,
@@ -338,18 +359,39 @@ public class BackupService : IBackupService
                                     jsonSerializer.WriteStartArray();
 
                                     var set = entityType.ValueFactory().ConfigureAwait(false);
-                                    await foreach (var item in set.ConfigureAwait(false))
+                                    var enumerator = set.GetAsyncEnumerator();
+                                    await using (enumerator)
                                     {
-                                        entities++;
-                                        try
+                                        while (true)
                                         {
-                                            using var document = JsonSerializer.SerializeToDocument(item, _serializerSettings);
-                                            document.WriteTo(jsonSerializer);
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            _logger.LogError(ex, "Could not load entity {Entity}", item);
-                                            throw;
+                                            bool hasNext;
+                                            try
+                                            {
+                                                hasNext = await enumerator.MoveNextAsync();
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                _logger.LogError(ex, "Could not read next entity of type {Table}, the underlying data appears to be corrupt. Skipping this row and continuing backup; the affected database row should be inspected and fixed manually", entityType.SourceName);
+                                                continue;
+                                            }
+
+                                            if (!hasNext)
+                                            {
+                                                break;
+                                            }
+
+                                            var item = enumerator.Current;
+                                            entities++;
+                                            try
+                                            {
+                                                using var document = JsonSerializer.SerializeToDocument(item, _serializerSettings);
+                                                document.WriteTo(jsonSerializer);
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                _logger.LogError(ex, "Could not load entity {Entity}", item);
+                                                throw;
+                                            }
                                         }
                                     }
 
@@ -404,6 +446,15 @@ public class BackupService : IBackupService
                 if (backupOptions.Metadata)
                 {
                     CopyDirectory(Path.Combine(_applicationPaths.InternalMetadataPath), Path.Combine("Data", "metadata"));
+
+                    // If a custom metadata path is configured, the default location may still contain data.
+                    if (!string.Equals(
+                            Path.GetFullPath(_applicationPaths.DefaultInternalMetadataPath),
+                            Path.GetFullPath(_applicationPaths.InternalMetadataPath),
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        CopyDirectory(Path.Combine(_applicationPaths.DefaultInternalMetadataPath), Path.Combine("Data", "metadata-default"));
+                    }
                 }
 
                 var manifestStream = await zipArchive.CreateEntry(ManifestEntryName).OpenAsync().ConfigureAwait(false);

@@ -7,6 +7,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Api.Controllers;
 using Jellyfin.Api.Extensions;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
@@ -150,27 +151,27 @@ public class DynamicHlsHelper
         var isLiveStream = state.IsSegmentedLiveStream;
 
         var queryString = _httpContextAccessor.HttpContext.Request.QueryString.ToString();
+        var playlistQuery = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(queryString);
 
-        // from universal audio service, need to override the AudioCodec when the actual request differs from original query
+        // From universal audio service: timeline is determined by segment index and runtime ticks, not StartTimeTicks
+        playlistQuery.Remove("StartTimeTicks");
+
+        // From universal audio service: override AudioCodec when the actual request differs from original query
         if (!string.Equals(state.OutputAudioCodec, _httpContextAccessor.HttpContext.Request.Query["AudioCodec"].ToString(), StringComparison.OrdinalIgnoreCase))
         {
-            var newQuery = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(queryString);
-            newQuery["AudioCodec"] = state.OutputAudioCodec;
-            queryString = Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(string.Empty, newQuery);
+            playlistQuery["AudioCodec"] = state.OutputAudioCodec;
         }
 
-        // from universal audio service
-        if (!string.IsNullOrWhiteSpace(state.Request.SegmentContainer)
-            && !queryString.Contains("SegmentContainer", StringComparison.OrdinalIgnoreCase))
+        // From universal audio service
+        if (!string.IsNullOrWhiteSpace(state.Request.SegmentContainer))
         {
-            queryString += "&SegmentContainer=" + state.Request.SegmentContainer;
+            playlistQuery.TryAdd("SegmentContainer", state.Request.SegmentContainer);
         }
 
-        // from universal audio service
-        if (!string.IsNullOrWhiteSpace(state.Request.TranscodeReasons)
-            && !queryString.Contains("TranscodeReasons=", StringComparison.OrdinalIgnoreCase))
+        // From universal audio service
+        if (!string.IsNullOrWhiteSpace(state.Request.TranscodeReasons))
         {
-            queryString += "&TranscodeReasons=" + state.Request.TranscodeReasons;
+            playlistQuery.TryAdd("TranscodeReasons", state.Request.TranscodeReasons);
         }
 
         // Video rotation metadata is only supported in fMP4 remuxing
@@ -181,13 +182,12 @@ public class DynamicHlsHelper
             && !string.IsNullOrWhiteSpace(state.Request.SegmentContainer)
             && !string.Equals(state.Request.SegmentContainer, "mp4", StringComparison.OrdinalIgnoreCase))
         {
-            queryString += "&AllowVideoStreamCopy=false";
+            playlistQuery["AllowVideoStreamCopy"] = "false";
         }
 
         // Main stream
         var baseUrl = isLiveStream ? "live.m3u8" : "main.m3u8";
-        var playlistUrl = baseUrl + queryString;
-        var playlistQuery = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(queryString);
+        var playlistUrl = Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(baseUrl, playlistQuery);
 
         var subtitleStreams = state.MediaSource
             .MediaStreams
@@ -207,6 +207,25 @@ public class DynamicHlsHelper
         if (!string.IsNullOrWhiteSpace(subtitleGroup))
         {
             AddSubtitles(state, subtitleStreams, builder, _httpContextAccessor.HttpContext.User);
+        }
+
+        // For DoVi profiles without a compatible base layer (P5 HEVC, P10/bl0 AV1),
+        // add a spec-compliant dvh1/dav1 variant before the hvc1 hack variant.
+        // SUPPLEMENTAL-CODECS cannot be used for these profiles (no compatible BL to supplement).
+        // The DoVi variant is listed first so spec-compliant clients (Apple TV, webOS 24+)
+        // select it over the fallback when both have identical BANDWIDTH.
+        // Only emit for clients that explicitly declared DOVI support to avoid breaking
+        // non-compliant players that don't recognize dvh1/dav1 CODECS strings.
+        if (state.VideoStream is not null
+            && state.VideoRequest is not null
+            && EncodingHelper.IsCopyCodec(state.OutputVideoCodec)
+            && state.VideoStream.VideoRangeType == VideoRangeType.DOVI
+            && state.VideoStream.DvProfile.HasValue
+            && state.VideoStream.DvLevel.HasValue
+            && state.GetRequestedRangeTypes(state.VideoStream.Codec)
+                .Contains(VideoRangeType.DOVI.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            AppendDoviPlaylist(builder, state, playlistUrl, totalBitrate, subtitleGroup);
         }
 
         var basicPlaylist = AppendPlaylist(builder, state, playlistUrl, totalBitrate, subtitleGroup);
@@ -356,6 +375,65 @@ public class DynamicHlsHelper
     }
 
     /// <summary>
+    /// Appends a Dolby Vision variant with dvh1/dav1 CODECS for profiles without a compatible
+    /// base layer (P5 HEVC, P10/bl0 AV1). This enables spec-compliant HLS clients to detect
+    /// DoVi from the manifest rather than relying on init segment inspection.
+    /// </summary>
+    /// <param name="builder">StringBuilder for the master playlist.</param>
+    /// <param name="state">StreamState of the current stream.</param>
+    /// <param name="url">Playlist URL for this variant.</param>
+    /// <param name="bitrate">Bitrate for the BANDWIDTH field.</param>
+    /// <param name="subtitleGroup">Subtitle group identifier, or null.</param>
+    private void AppendDoviPlaylist(StringBuilder builder, StreamState state, string url, int bitrate, string? subtitleGroup)
+    {
+        var dvProfile = state.VideoStream.DvProfile;
+        var dvLevel = state.VideoStream.DvLevel;
+        if (dvProfile is null || dvLevel is null)
+        {
+            return;
+        }
+
+        var playlistBuilder = new StringBuilder();
+        playlistBuilder.Append("#EXT-X-STREAM-INF:BANDWIDTH=")
+            .Append(bitrate.ToString(CultureInfo.InvariantCulture))
+            .Append(",AVERAGE-BANDWIDTH=")
+            .Append(bitrate.ToString(CultureInfo.InvariantCulture));
+
+        playlistBuilder.Append(",VIDEO-RANGE=PQ");
+
+        var dvCodec = HlsCodecStringHelpers.GetDoviString(dvProfile.Value, dvLevel.Value, state.ActualOutputVideoCodec);
+
+        string audioCodecs = string.Empty;
+        if (!string.IsNullOrEmpty(state.ActualOutputAudioCodec))
+        {
+            audioCodecs = GetPlaylistAudioCodecs(state);
+        }
+
+        playlistBuilder.Append(",CODECS=\"")
+            .Append(dvCodec);
+        if (!string.IsNullOrEmpty(audioCodecs))
+        {
+            playlistBuilder.Append(',').Append(audioCodecs);
+        }
+
+        playlistBuilder.Append('"');
+
+        AppendPlaylistResolutionField(playlistBuilder, state);
+        AppendPlaylistFramerateField(playlistBuilder, state);
+
+        if (!string.IsNullOrWhiteSpace(subtitleGroup))
+        {
+            playlistBuilder.Append(",SUBTITLES=\"")
+                .Append(subtitleGroup)
+                .Append('"');
+        }
+
+        playlistBuilder.AppendLine();
+        playlistBuilder.AppendLine(url);
+        builder.Append(playlistBuilder);
+    }
+
+    /// <summary>
     /// Appends a VIDEO-RANGE field containing the range of the output video stream.
     /// </summary>
     /// <seealso cref="AppendPlaylist(StringBuilder, StreamState, string, int, string)"/>
@@ -380,6 +458,7 @@ public class DynamicHlsHelper
                     {
                         case VideoRangeType.HLG:
                         case VideoRangeType.DOVIWithHLG:
+                        case VideoRangeType.DOVIInvalid when string.Equals(state.VideoStream.ColorTransfer, "arib-std-b67", StringComparison.OrdinalIgnoreCase):
                             builder.Append(",VIDEO-RANGE=HLG");
                             break;
                         default:
@@ -612,11 +691,12 @@ public class DynamicHlsHelper
 
             var url = string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}/Subtitles/{1}/subtitles.m3u8?SegmentLength={2}&ApiKey={3}",
+                "{0}/Subtitles/{1}/subtitles.m3u8?SegmentLength={2}&ApiKey={3}&VttTimestampMapMpegts={4}",
                 state.Request.MediaSourceId,
                 stream.Index.ToString(CultureInfo.InvariantCulture),
                 30.ToString(CultureInfo.InvariantCulture),
-                user.GetToken());
+                user.GetToken(),
+                GetVttTimestampMapMpegts(state.Request.SegmentContainer).ToString(CultureInfo.InvariantCulture));
 
             var line = string.Format(
                 CultureInfo.InvariantCulture,
@@ -629,6 +709,20 @@ public class DynamicHlsHelper
 
             builder.AppendLine(line);
         }
+    }
+
+    /// <summary>
+    /// Gets the WebVTT X-TIMESTAMP-MAP MPEGTS offset appropriate for the given HLS segment container.
+    /// fMP4 segments start at PTS 0, unlike legacy MPEG-TS segments which start at the historical 10 second offset.
+    /// </summary>
+    /// <param name="segmentContainer">The HLS segment container, e.g. "ts" or "mp4".</param>
+    /// <returns>The MPEGTS offset to embed in the WebVTT X-TIMESTAMP-MAP header.</returns>
+    internal static long GetVttTimestampMapMpegts(string? segmentContainer)
+    {
+        var segmentExtension = EncodingHelper.GetSegmentFileExtension(segmentContainer);
+        return string.Equals(segmentExtension, ".mp4", StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : SubtitleController.DefaultVttTimestampMapMpegts;
     }
 
     /// <summary>
