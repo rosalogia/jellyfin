@@ -24,6 +24,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                     FilePath = table.Column<string>(type: "TEXT", maxLength: 1024, nullable: true),
                     Status = table.Column<int>(type: "INTEGER", nullable: false),
                     ItemName = table.Column<string>(type: "TEXT", maxLength: 512, nullable: true),
+                    SubtitleStreamIndex = table.Column<int>(type: "INTEGER", nullable: true),
+                    AudioStreamIndex = table.Column<int>(type: "INTEGER", nullable: true),
                     RowVersion = table.Column<uint>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
