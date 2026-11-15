@@ -115,6 +115,60 @@ public class StudySubtitlesTests
         Assert.Equal("le", line.Words[2].Entries[0].Pinyin);
     }
 
+    [Theory]
+    [InlineData("我们，了解了？", new[] { "我们", "，", "了解", "了", "？" })]
+    [InlineData("「我们了解了」", new[] { "「", "我们", "了解", "了", "」" })]
+    public void FromSidecar_KeepsWordsWhenPunctuationIsMissingFromThem(string text, string[] expected)
+    {
+        var sidecar = new LensSidecar
+        {
+            Subtitles =
+            [
+                new LensSubtitle
+                {
+                    Start = "00:00:01.000",
+                    End = "00:00:02.000",
+                    Text = text,
+                    Words =
+                    [
+                        new LensWord { Word = "我们", English = "we" },
+                        new LensWord { Word = "了解", English = "understood" },
+                        new LensWord { Word = "了", English = "(completed)" },
+                        new LensWord { Word = "。", English = "." }
+                    ]
+                }
+            ]
+        };
+
+        var line = Assert.Single(StudySubtitleBuilder.FromSidecar(sidecar, Small));
+
+        Assert.Equal(expected, line.Words.Select(w => w.Text));
+        Assert.Equal("understood", line.Words.Single(w => w.Text == "了解").Gloss);
+    }
+
+    [Fact]
+    public void FromSidecar_SegmentsItselfWhenWordsDoNotMatchText()
+    {
+        var sidecar = new LensSidecar
+        {
+            Subtitles =
+            [
+                new LensSubtitle
+                {
+                    Start = "00:00:01.000",
+                    End = "00:00:02.000",
+                    Text = "我们了解了",
+                    Words = [new LensWord { Word = "我们", English = "we" }, new LensWord { Word = "了", English = "(completed)" }]
+                }
+            ]
+        };
+
+        var line = Assert.Single(StudySubtitleBuilder.FromSidecar(sidecar, Small));
+
+        Assert.Equal(new[] { "我们", "了解", "了" }, line.Words.Select(w => w.Text));
+        Assert.All(line.Words, w => Assert.Null(w.Gloss));
+    }
+
     [Fact]
     public void EmbeddedDictionary_LoadsAndSegmentsEverydaySpeech()
     {

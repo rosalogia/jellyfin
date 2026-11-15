@@ -76,8 +76,8 @@ internal static partial class StudySubtitleBuilder
             }
 
             var text = subtitle.Text.Trim();
-            var sidecarWords = subtitle.Words?.Where(w => w.Word.Length > 0).ToList();
-            var words = sidecarWords is { Count: > 0 } && string.Concat(sidecarWords.Select(w => w.Word)) == text
+            var sidecarWords = AlignToText(text, subtitle.Words);
+            var words = sidecarWords is not null
                 ? BuildWordsFromSidecar(sidecarWords, dictionary)
                 : BuildWords(text, dictionary);
 
@@ -163,6 +163,68 @@ internal static partial class StudySubtitleBuilder
 
         ticks = 0;
         return false;
+    }
+
+    /// <summary>
+    /// Lines an enrichment file's words up with the line text. Lens often leaves punctuation out of the
+    /// word list, so text between words is kept as long as it has no Chinese characters in it.
+    /// </summary>
+    /// <returns>The words covering the whole text, or <c>null</c> when they don't match it.</returns>
+    private static List<LensWord>? AlignToText(string text, List<LensWord>? sidecarWords)
+    {
+        if (sidecarWords is null || sidecarWords.Count == 0)
+        {
+            return null;
+        }
+
+        var aligned = new List<LensWord>(sidecarWords.Count);
+        var position = 0;
+        foreach (var sidecarWord in sidecarWords)
+        {
+            if (sidecarWord.Word.Length == 0)
+            {
+                continue;
+            }
+
+            var index = text.IndexOf(sidecarWord.Word, position, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                // Punctuation the text doesn't have is harmless; a missing Chinese word means the lists differ.
+                if (ChineseSegmenter.ContainsHan(sidecarWord.Word))
+                {
+                    return null;
+                }
+
+                continue;
+            }
+
+            if (!TryAddGap(aligned, text[position..index]))
+            {
+                return null;
+            }
+
+            aligned.Add(sidecarWord);
+            position = index + sidecarWord.Word.Length;
+        }
+
+        return TryAddGap(aligned, text[position..]) && aligned.Exists(w => ChineseSegmenter.ContainsHan(w.Word))
+            ? aligned
+            : null;
+    }
+
+    private static bool TryAddGap(List<LensWord> words, string gap)
+    {
+        if (ChineseSegmenter.ContainsHan(gap))
+        {
+            return false;
+        }
+
+        if (gap.Length > 0)
+        {
+            words.Add(new LensWord { Word = gap });
+        }
+
+        return true;
     }
 
     private static List<StudyWordDto> BuildWordsFromSidecar(List<LensWord> sidecarWords, ChineseDictionary dictionary)
